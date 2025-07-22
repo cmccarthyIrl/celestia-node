@@ -1,0 +1,77 @@
+parameters:
+  - name: celestiaUser
+    type: string
+  - name: celestiaVersion
+    type: string
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+  - name: remoteUser
+    type: string
+  - name: operations
+    type: object
+    default:
+      download: true
+      build: false
+      configure: false
+  - name: repository
+    type: string
+    default: 'https://github.com/celestiaorg/celestia-node.git'
+  - name: targetDirectory
+    type: string
+    default: 'celestia-node'
+
+steps:
+  # Download Celestia source code
+  - ${{ if parameters.operations.download }}:
+    - template: ../../common/user-execution.yml
+      parameters:
+        celestiaUser: ${{ parameters.celestiaUser }}
+        sshKeyFile: ${{ parameters.sshKeyFile }}
+        remoteHost: ${{ parameters.remoteHost }}
+        remoteUser: ${{ parameters.remoteUser }}
+        displayName: '📥 Download Celestia ${{ parameters.celestiaVersion }} Source Code'
+        scriptContent: |
+          echo "📦 Downloading Celestia ${{ parameters.celestiaVersion }} source code..."
+
+          # Clean up existing directory
+          cd $HOME
+          rm -rf ${{ parameters.targetDirectory }}
+
+          # Clone repository and checkout specific version
+          git clone ${{ parameters.repository }} ${{ parameters.targetDirectory }}
+          cd ${{ parameters.targetDirectory }}/
+          git checkout tags/${{ parameters.celestiaVersion }}
+
+          echo "✅ Celestia source code downloaded successfully!"
+
+  # Build Celestia (if requested)
+  - ${{ if parameters.operations.build }}:
+    - template: ../../common/user-execution.yml
+      parameters:
+        celestiaUser: ${{ parameters.celestiaUser }}
+        sshKeyFile: ${{ parameters.sshKeyFile }}
+        remoteHost: ${{ parameters.remoteHost }}
+        remoteUser: ${{ parameters.remoteUser }}
+        displayName: '⚙️ Build Celestia Node'
+        scriptContent: |
+          echo "🔨 Building Celestia node..."
+          cd $HOME/celestia-node
+          make build
+          echo "✅ Celestia node built successfully!"
+
+  # Configure Celestia (if requested)
+  - ${{ if parameters.operations.configure }}:
+    - template: ../../common/user-execution.yml
+      parameters:
+        celestiaUser: ${{ parameters.celestiaUser }}
+        sshKeyFile: ${{ parameters.sshKeyFile }}
+        remoteHost: ${{ parameters.remoteHost }}
+        remoteUser: ${{ parameters.remoteUser }}
+        displayName: '⚙️ Configure Celestia Node'
+        scriptContent: |
+          echo "⚙️ Configuring Celestia node..."
+          cd $HOME/celestia-node
+          # Add configuration commands here
+          echo "✅ Celestia node configured successfully!"

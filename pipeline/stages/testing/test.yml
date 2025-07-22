@@ -1,0 +1,169 @@
+parameters:
+  - name: celestiaRpcUrl
+    type: string
+  - name: celestiaGatewayUrl
+    type: string
+  - name: testResultsFiles
+    type: string
+    default: '**/test-results.xml'
+  - name: reportPath
+    type: string
+    default: playwright-report
+  - name: artifactName
+    type: string
+    default: playwright-report
+  - name: testingSteps
+    type: object
+    default:
+      runTests: true
+      publishResults: false
+
+steps:
+  # Setup Node.js and dependencies before running tests
+  - ${{ if parameters.testingSteps.runTests }}:
+    - checkout: self
+      displayName: 📥 Checkout source code
+
+    - task: NodeTool@0
+      displayName: '⚙️ Setup Node.js'
+      inputs:
+        versionSpec: '24.x'
+
+    - task: Bash@3
+      displayName: ⚙️ Install Dependencies
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "Installing npm dependencies..."
+          npm ci
+          echo "Dependencies installed successfully!"
+
+    - task: Bash@3
+      displayName: '⚙️ Install playwright'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "Installing Playwright..."
+          npx playwright install --with-deps
+          echo "Playwright installed successfully!"
+
+    - task: Bash@3
+      displayName: '🔒 Verify Security Configuration'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "🔒 Verifying firewall and security configuration..."
+
+          # Extract host from the RPC URL for SSH connection
+          REMOTE_HOST=$(echo "${{ parameters.celestiaRpcUrl }}" | sed 's|http://||' | cut -d':' -f1)
+          echo "🌐 Remote host: $REMOTE_HOST"
+
+          # Connect to remote host and verify firewall rules
+          ssh -i ~/.ssh/${SSH_KEY_FILE} ${REMOTE_USER}@${REMOTE_HOST} << 'EOF'
+          set -e
+
+          echo "🛡️ Checking UFW firewall status..."
+
+          # Check if UFW is installed (should be from previous stage)
+          if ! command -v ufw &> /dev/null; then
+            echo "❌ UFW is not installed! The security configuration stage may have failed."
+            echo "🔍 Checking if security stage completed properly..."
+            exit 1
+          fi
+
+          # Verify UFW is active
+          UFW_STATUS=$(sudo ufw status | head -n1)
+          if echo "$UFW_STATUS" | grep -q "Status: active"; then
+            echo "✅ UFW firewall is active"
+          else
+            echo "❌ UFW firewall is not active! Expected it to be configured in security stage."
+            echo "📊 Current UFW status: $UFW_STATUS"
+            exit 1
+          fi
+
+          # Show current firewall rules
+          echo "📊 Current firewall rules:"
+          sudo ufw status verbose
+
+          # Verify specific port rules
+          echo "🔍 Verifying specific port configurations..."
+
+          # Check SSH ports
+          if sudo ufw status | grep -q "22/tcp"; then
+            echo "✅ Port 22 (SSH) is configured"
+          else
+            echo "❌ Port 22 (SSH) is not configured!"
+            exit 1
+          fi
+
+          if sudo ufw status | grep -q "2121/tcp"; then
+            echo "✅ Port 2121 (Internet access) is configured"
+          else
+            echo "❌ Port 2121 (Internet access) is not configured!"
+            exit 1
+          fi
+
+          # Check if rate limiting is applied to port 22
+          if sudo ufw status verbose | grep -q "22/tcp.*LIMIT"; then
+            echo "✅ Port 22 has rate limiting enabled"
+          else
+            echo "⚠️  Port 22 rate limiting not detected (may be configured differently)"
+          fi
+
+          # Check if port 2121 has no UFW rate limiting (but may have iptables limiting)
+          if sudo ufw status verbose | grep "2121/tcp" | grep -q "LIMIT"; then
+            echo "⚠️  Port 2121 has UFW rate limiting (unexpected)"
+          else
+            echo "✅ Port 2121 has no UFW rate limiting (iptables limiting configured separately)"
+          fi
+
+          # Verify default policies
+          echo "🔍 Checking default policies..."
+          UFW_VERBOSE=$(sudo ufw status verbose)
+
+          if echo "$UFW_VERBOSE" | grep -q "deny (incoming)"; then
+            echo "✅ Default incoming policy is deny"
+          else
+            echo "❌ Default incoming policy is not deny!"
+            exit 1
+          fi
+
+          if echo "$UFW_VERBOSE" | grep -q "allow (outgoing)"; then
+            echo "✅ Default outgoing policy is allow"
+          else
+            echo "❌ Default outgoing policy is not allow!"
+            echo "🔍 Debug - UFW status output:"
+            echo "$UFW_VERBOSE"
+            exit 1
+          fi
+
+          # Additional security checks
+          echo "🔍 Checking active network connections..."
+          echo "📊 Listening ports:"
+          sudo netstat -tlnp | grep -E ':(22|2121)\s' || echo "No SSH ports found listening"
+
+          echo "ℹ️  Note: Port 22 is SSH-only, Port 2121 is for general internet access"
+          echo "ℹ️  Celestia RPC/Gateway ports are not checked as no trusted IPs were configured"
+          echo "✅ Security configuration verification completed successfully!"
+          EOF
+      env:
+        SSH_KEY_FILE: $(SSH_KEY_FILE)
+        REMOTE_USER: $(REMOTE_USER)
+
+    - task: Bash@3
+      displayName: '🎭 Test Celestia Light Node'
+      inputs:
+        targetType: 'inline'
+        script: |
+          npx playwright test --grep=@DeploymentWorkflow --project=pipeline --timeout=600000
+      env:
+        CELESTIA_RPC_URL: ${{ parameters.celestiaRpcUrl }}
+        CELESTIA_GATEWAY_URL: ${{ parameters.celestiaGatewayUrl }}
+
+  # Publish Test Results (if requested)
+  - ${{ if parameters.testingSteps.publishResults }}:
+    - template: publish.yml
+      parameters:
+        testResultsFiles: ${{ parameters.testResultsFiles }}
+        targetPath: ${{ parameters.reportPath }}
+        artifact: ${{ parameters.artifactName }}

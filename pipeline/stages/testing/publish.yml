@@ -1,0 +1,21 @@
+parameters:
+  testResultsFiles: ''
+  targetPath: ''
+  artifact: ''
+
+steps:
+  - task: PublishTestResults@2
+    displayName: 📊 Publish Test Results
+    condition: always()
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: ${{ parameters.testResultsFiles }}
+      failTaskOnFailedTests: true
+
+  - task: PublishPipelineArtifact@1
+    displayName: 📄 Publish HTML Test Report
+    condition: always()
+    inputs:
+      targetPath: ${{ parameters.targetPath }}
+      artifact: ${{ parameters.artifact }}
+      publishLocation: pipeline

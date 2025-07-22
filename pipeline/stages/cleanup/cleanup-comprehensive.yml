@@ -1,0 +1,411 @@
+parameters:
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+  - name: remoteUser
+    type: string
+  - name: celestiaUser
+    type: string
+    default: 'celestia'
+  - name: removeUserHomeDirectory
+    type: boolean
+    default: false
+  - name: cleanupType
+    type: string
+    default: 'complete'
+    # Options: 'complete', 'process', 'systemd-files'
+
+steps:
+  - template: ../../common/ssh-execution.yml
+    parameters:
+      sshKeyFile: ${{ parameters.sshKeyFile }}
+      remoteHost: ${{ parameters.remoteHost }}
+      remoteUser: ${{ parameters.remoteUser }}
+      displayName: '🧹 Cleanup: Comprehensive Celestia Cleanup (${{ parameters.cleanupType }})'
+      condition: 'always()'
+      scriptContent: |
+        set +e  # Don't exit on errors
+
+        # Configuration
+        CLEANUP_TYPE="${{ parameters.cleanupType }}"
+        CELESTIA_USER="${{ parameters.celestiaUser }}"
+        REMOVE_USER_HOME="${{ parameters.removeUserHomeDirectory }}"
+
+        # Function to log with timestamp
+        log() {
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+        }
+
+        # Enhanced function to get stored PIDs from deployment
+        get_stored_pids() {
+            local stored_pids=""
+            local pid_file_locations=(
+                "/var/run/celestia-light.pid"
+                "/run/celestia-light.pid"
+                "/tmp/celestia-light.pid"
+                "/home/*/celestia-light.pid"
+                "celestia-light.pid"
+                "/var/run/celestia.pid"
+                "/run/celestia.pid"
+                "/tmp/celestia.pid"
+                "/home/*/myagent/_work/*.pid"
+                "/home/celestia/*.pid"
+                "/home/azureuser/*.pid"
+            )
+
+            for pid_file in "${pid_file_locations[@]}"; do
+                if [ -f "$pid_file" ]; then
+                    local pid=$(cat "$pid_file" 2>/dev/null | tr -d '\n\r ')
+                    if [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null && [ -e "/proc/$pid" ]; then
+                        # Verify it's actually a celestia process
+                        local cmd=$(ps -o cmd= -p "$pid" 2>/dev/null || echo "")
+                        if [[ "$cmd" == *"celestia"* ]]; then
+                            stored_pids="$stored_pids $pid"
+                            log "📍 Found stored PID from $pid_file: $pid"
+                        else
+                            rm -f "$pid_file" 2>/dev/null || true
+                            log "🗑️ Removed stale PID file: $pid_file"
+                        fi
+                    else
+                        rm -f "$pid_file" 2>/dev/null || true
+                        log "🗑️ Removed invalid PID file: $pid_file"
+                    fi
+                fi
+            done
+
+            echo "$stored_pids" | xargs
+        }
+
+        # Enhanced function to get celestia processes with multiple targeting methods
+        get_celestia_processes() {
+            local process_pattern="$1"
+            local pids_found=""
+
+            # Method 0: Check stored PID files first (most reliable)
+            local stored_pids=$(get_stored_pids)
+            for pid in $stored_pids; do
+                if [ -e "/proc/$pid" ]; then
+                    pids_found="$pids_found $pid"
+                    log "📍 Found stored PID: $pid"
+                fi
+            done
+
+            # Method 1: Try systemctl first for managed services
+            local systemd_services=("celestia-light" "celestia-node")
+            for service in "${systemd_services[@]}"; do
+                if systemctl is-active "$service" >/dev/null 2>&1; then
+                    local main_pid=$(systemctl show "$service" --property MainPID --value 2>/dev/null)
+                    if [ -n "$main_pid" ] && [ "$main_pid" != "0" ] && [ -e "/proc/$main_pid" ]; then
+                        local cmd=$(ps -o cmd= -p "$main_pid" 2>/dev/null || echo "")
+                        if [[ "$cmd" == *"celestia"* ]] && ! echo "$pids_found" | grep -q "\b$main_pid\b"; then
+                            pids_found="$pids_found $main_pid"
+                            log "📍 Found systemd managed process ($service): $main_pid"
+                        fi
+                    fi
+                fi
+            done
+
+            # Method 2: Look for processes by exact binary path
+            local binary_paths=(
+                "/usr/local/bin/celestia"
+                "/usr/bin/celestia"
+                "/opt/celestia/bin/celestia"
+            )
+
+            for binary_path in "${binary_paths[@]}"; do
+                local found_pids=$(pgrep -f "^$binary_path" 2>/dev/null || true)
+                for pid in $found_pids; do
+                    if [ -e "/proc/$pid" ] && ! echo "$pids_found" | grep -q "\b$pid\b"; then
+                        pids_found="$pids_found $pid"
+                        log "📍 Found process by binary path: $pid"
+                    fi
+                done
+            done
+
+            # Method 3: Fallback to pgrep -f
+            if [ -z "$pids_found" ]; then
+                local fallback_pids=$(pgrep -f "$process_pattern" 2>/dev/null || true)
+                for pid in $fallback_pids; do
+                    if [ -e "/proc/$pid" ]; then
+                        local cmd=$(ps -o cmd= -p "$pid" 2>/dev/null || echo "")
+                        if [[ "$cmd" == *"celestia"* ]] && [[ "$cmd" != *"grep"* ]] && [[ "$cmd" != *"cleanup"* ]]; then
+                            pids_found="$pids_found $pid"
+                            log "📍 Found process via fallback method: $pid"
+                        fi
+                    fi
+                done
+            fi
+
+            echo "$pids_found" | xargs
+        }
+
+        # Enhanced function to stop celestia processes
+        stop_celestia_processes() {
+            local process_pattern="$1"
+            local max_attempts=5
+            local attempt=1
+
+            while [ $attempt -le $max_attempts ]; do
+                PIDS=$(get_celestia_processes "$process_pattern")
+                if [ -z "$PIDS" ]; then
+                    log "✅ No $process_pattern processes found (attempt $attempt)"
+                    return 0
+                fi
+
+                log "Found $process_pattern processes (attempt $attempt): $PIDS"
+
+                if [ $attempt -eq 1 ]; then
+                    log "Attempting graceful shutdown with SIGTERM..."
+                    for pid in $PIDS; do
+                        if kill -TERM "$pid" 2>/dev/null; then
+                            log "✅ Sent SIGTERM to $pid"
+                        elif sudo kill -TERM "$pid" 2>/dev/null; then
+                            log "✅ Sent SIGTERM to $pid (with sudo)"
+                        else
+                            log "⚠️ Failed to send SIGTERM to $pid"
+                        fi
+                    done
+                    sleep 8
+                elif [ $attempt -eq 2 ]; then
+                    log "Attempting force kill with SIGKILL..."
+                    for pid in $PIDS; do
+                        if kill -9 "$pid" 2>/dev/null; then
+                            log "✅ Force killed $pid"
+                        elif sudo kill -9 "$pid" 2>/dev/null; then
+                            log "✅ Force killed $pid (with sudo)"
+                        else
+                            log "⚠️ Failed to force kill $pid"
+                        fi
+                    done
+                    sleep 3
+                else
+                    log "Using pkill nuclear option (attempt $attempt)..."
+                    sudo pkill -9 -f "$process_pattern" 2>/dev/null || true
+                    pkill -9 -f "$process_pattern" 2>/dev/null || true
+                    sudo pkill -9 celestia 2>/dev/null || true
+                    pkill -9 celestia 2>/dev/null || true
+                    sleep 3
+                fi
+
+                attempt=$((attempt + 1))
+            done
+
+            REMAINING_PIDS=$(get_celestia_processes "$process_pattern")
+            if [ -z "$REMAINING_PIDS" ]; then
+                log "✅ All $process_pattern processes successfully terminated"
+            else
+                log "⚠️ Warning: Processes still running: $REMAINING_PIDS"
+            fi
+        }
+
+        # Function to cleanup PID files and process artifacts
+        cleanup_process_artifacts() {
+            log "Cleaning up process artifacts..."
+
+            local systemd_services=("celestia-light" "celestia-node")
+            for service in "${systemd_services[@]}"; do
+                if systemctl is-active "$service" >/dev/null 2>&1; then
+                    log "Stopping systemd service $service..."
+                    sudo systemctl stop "$service" || true
+                    sleep 2
+                fi
+
+                if systemctl is-enabled "$service" >/dev/null 2>&1; then
+                    log "Disabling systemd service $service..."
+                    sudo systemctl disable "$service" || true
+                fi
+            done
+
+            local pid_locations=(
+                "/var/run"
+                "/tmp"
+                "/home/*/myagent/_work"
+                "/home/celestia"
+                "/home/azureuser"
+            )
+
+            for location in "${pid_locations[@]}"; do
+                find $location -name "celestia*.pid" -delete 2>/dev/null || true
+            done
+
+            find /tmp -name "*celestia*.lock" -delete 2>/dev/null || true
+            find /var/lock -name "*celestia*" -delete 2>/dev/null || true
+            find /tmp -name "*celestia*.sock" -delete 2>/dev/null || true
+
+            log "✅ Process artifacts cleaned"
+        }
+
+        # Function to clean systemd services
+        cleanup_systemd_services() {
+            log "Stopping and removing Celestia services..."
+
+            for service in celestia-light celestia-node; do
+                if systemctl is-active --quiet "$service" 2>/dev/null; then
+                    log "Stopping service: $service"
+                    sudo systemctl stop "$service" 2>/dev/null || true
+                fi
+
+                if systemctl is-enabled --quiet "$service" 2>/dev/null; then
+                    log "Disabling service: $service"
+                    sudo systemctl disable "$service" 2>/dev/null || true
+                fi
+            done
+
+            for service_path in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do
+                if [ -d "$service_path" ]; then
+                    sudo find "$service_path" -name "*celestia*" -delete 2>/dev/null || true
+                fi
+            done
+
+            sudo systemctl reset-failed 2>/dev/null || true
+            sudo systemctl daemon-reload 2>/dev/null && log "✅ Systemd daemon reloaded" || log "⚠️ Failed to reload systemd"
+        }
+
+        # Function to remove celestia directories from user home
+        remove_celestia_directories() {
+            local user_home="$1"
+            local celestia_user="$2"
+            local preserve_user_home="$3"
+            local username=$(basename "$user_home")
+
+            log "Cleaning Celestia directories from: $user_home (user: $username)"
+
+            patterns=(celestia-node .celestia-app .celestia-light-* celestia-node-temp .celestia*)
+
+            if [ "$username" = "$celestia_user" ] && [ "$preserve_user_home" != "true" ]; then
+                log "Removing entire celestia user home: $user_home"
+                sudo rm -rf "$user_home" 2>/dev/null || log "Failed to remove $user_home"
+            else
+                for pattern in "${patterns[@]}"; do
+                    find "$user_home" -name "$pattern" -exec sudo rm -rf {} + 2>/dev/null || true
+                done
+            fi
+
+            find "$user_home" -type d -name "*celestia*" -not -path "$user_home" 2>/dev/null | while read dir; do
+                if [ -d "$dir" ]; then
+                    log "Removing directory: $dir"
+                    sudo rm -rf "$dir" 2>/dev/null || true
+                fi
+            done
+        }
+
+        # Function to clean celestia binaries
+        cleanup_binaries() {
+            log "Removing Celestia binaries..."
+            for binary in "/usr/local/bin/celestia" "/usr/local/bin/cel-key" "/usr/bin/celestia" "/usr/bin/cel-key"; do
+                if [ -f "$binary" ]; then
+                    log "Removing binary: $binary"
+                    sudo rm -f "$binary" 2>/dev/null || true
+                fi
+            done
+        }
+
+        # Function to clean temporary files
+        cleanup_temporary_files() {
+            log "Cleaning temporary files..."
+            find /tmp -name "*celestia*" -delete 2>/dev/null || true
+            rm -f celestia-light.pid celestia-light.log temp_*.txt 2>/dev/null || true
+            rm -rf /tmp/go-* /tmp/celestia-* 2>/dev/null || true
+            log "✅ Cleaned temporary files"
+        }
+
+        # Function to clean workspace directories
+        cleanup_workspace_directories() {
+            log "Cleaning remote Azure DevOps workspace directories..."
+            find /home/*/myagent/_work -type d -name "*celestia*" 2>/dev/null | while read dir; do
+                if [ -d "$dir" ]; then
+                    log "Removing workspace directory: $dir"
+                    rm -rf "$dir" 2>/dev/null || true
+                fi
+            done
+        }
+
+        # Function to remove celestia user
+        remove_celestia_user() {
+            local celestia_user="$1"
+            local remove_user_home="$2"
+
+            if [ "$remove_user_home" = "true" ]; then
+                if id "$celestia_user" &>/dev/null; then
+                    log "Removing celestia user: $celestia_user"
+                    sudo userdel -r "$celestia_user" 2>/dev/null || log "Failed to remove user $celestia_user"
+                fi
+            else
+                log "⚠️ Preserving celestia user and home directory structure"
+            fi
+        }
+
+        # Main function to perform complete celestia cleanup
+        perform_complete_celestia_cleanup() {
+            local celestia_user="$1"
+            local remove_user_home="$2"
+
+            log "🧹 Starting comprehensive Celestia cleanup..."
+
+            log "Phase 1: Cleaning up process artifacts..."
+            cleanup_process_artifacts
+
+            log "Phase 2: Stopping Celestia light processes..."
+            stop_celestia_processes "celestia.*light"
+
+            log "Phase 3: Stopping all remaining Celestia processes..."
+            stop_celestia_processes "celestia"
+
+            log "Phase 4: Cleaning systemd services..."
+            cleanup_systemd_services
+
+            log "Phase 5: Removing Celestia directories..."
+            for user_home in /home/* /root; do
+                if [ -d "$user_home" ]; then
+                    remove_celestia_directories "$user_home" "$celestia_user" "$remove_user_home"
+                fi
+            done
+
+            cleanup_workspace_directories
+            cleanup_binaries
+            cleanup_temporary_files
+            cleanup_process_artifacts
+            remove_celestia_user "$celestia_user" "$remove_user_home"
+
+            log "✅ Comprehensive Celestia cleanup completed successfully"
+        }
+
+        # Main execution logic
+        case "$CLEANUP_TYPE" in
+          "complete")
+            perform_complete_celestia_cleanup "$CELESTIA_USER" "$REMOVE_USER_HOME"
+            ;;
+          "process")
+            log "🧹 Starting process-only cleanup..."
+            cleanup_process_artifacts
+            stop_celestia_processes "celestia.*light"
+            stop_celestia_processes "celestia"
+            cleanup_process_artifacts
+            log "✅ Process cleanup completed"
+            ;;
+          "systemd-files")
+            log "🧹 Starting systemd and files cleanup..."
+            cleanup_systemd_services
+
+            log "Removing Celestia directories..."
+            for user_home in /home/* /root; do
+                if [ -d "$user_home" ]; then
+                    remove_celestia_directories "$user_home" "$CELESTIA_USER" "$REMOVE_USER_HOME"
+                fi
+            done
+
+            cleanup_workspace_directories
+            cleanup_binaries
+            cleanup_temporary_files
+            remove_celestia_user "$CELESTIA_USER" "$REMOVE_USER_HOME"
+            log "✅ Services and files cleanup completed"
+            ;;
+          *)
+            log "❌ Unknown cleanup type: $CLEANUP_TYPE"
+            log "Available options: complete, process, systemd-files"
+            exit 1
+            ;;
+        esac
+
+        log "🎉 Cleanup operation '$CLEANUP_TYPE' finished successfully"

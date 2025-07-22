@@ -1,0 +1,165 @@
+parameters:
+  - name: celestiaUser
+    type: string
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+  - name: remoteUser
+    type: string
+
+steps:
+  - task: DownloadSecureFile@1
+    name: downloadKey
+    inputs:
+      secureFile: '${{ parameters.sshKeyFile }}'
+
+  - task: Bash@3
+    displayName: '🔑 Setup SSH Key'
+    inputs:
+      targetType: inline
+      script: |
+        mkdir -p ~/.ssh
+        cp $(downloadKey.secureFilePath) ~/.ssh/${{ parameters.sshKeyFile }}
+        chmod 600 ~/.ssh/${{ parameters.sshKeyFile }}
+        ssh-keyscan -H ${{ parameters.remoteHost }} >> ~/.ssh/known_hosts
+
+  - template: ../../common/ssh-execution.yml
+    parameters:
+      sshKeyFile: ${{ parameters.sshKeyFile }}
+      remoteHost: ${{ parameters.remoteHost }}
+      remoteUser: ${{ parameters.remoteUser }}
+      displayName: '⚙️ Setup System Dependencies'
+      scriptContent: |
+        set -e
+
+        echo "🚀 Setting up environment"
+
+        # Set non-interactive mode for apt
+        export DEBIAN_FRONTEND=noninteractive
+
+        # Update system packages with timeout and non-interactive mode
+        echo "📦 Updating system packages..."
+        sudo apt-get update
+
+        # Upgrade with automatic yes and configure to avoid prompts
+        echo "⬆️ Upgrading system packages (non-interactive)..."
+        sudo apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
+
+        # Install minimal required packages for Celestia node
+        echo "🛠️ Installing minimal required packages..."
+        sudo apt-get install -y \
+          build-essential \
+          git \
+          curl \
+          make \
+          ca-certificates \
+          jq
+
+        # Create celestia user with home directory
+        if ! id "${{ parameters.celestiaUser }}" &>/dev/null; then
+          echo "👤 Creating celestia user..."
+          sudo useradd -m -s /bin/bash ${{ parameters.celestiaUser }}
+          sudo usermod -aG sudo ${{ parameters.celestiaUser }}
+
+          # Configure limited passwordless sudo for celestia user
+          echo "🔐 Configuring limited passwordless sudo for celestia user..."
+          echo "${{ parameters.celestiaUser }} ALL=(ALL) NOPASSWD:/bin/systemctl start celestia-light, /bin/systemctl stop celestia-light, /bin/systemctl restart celestia-light, /bin/systemctl status celestia-light, /bin/systemctl enable celestia-light, /bin/systemctl disable celestia-light, /bin/systemctl daemon-reload" | sudo tee /etc/sudoers.d/${{ parameters.celestiaUser }}
+          sudo chmod 440 /etc/sudoers.d/${{ parameters.celestiaUser }}
+        else
+          echo "👤 Celestia user already exists, ensuring proper configuration..."
+
+          # Check if home directory exists and create if missing
+          if [ ! -d "/home/${{ parameters.celestiaUser }}" ]; then
+            echo "🏠 Home directory missing, creating it..."
+            sudo mkdir -p /home/${{ parameters.celestiaUser }}
+            sudo chown ${{ parameters.celestiaUser }}:${{ parameters.celestiaUser }} /home/${{ parameters.celestiaUser }}
+            sudo chmod 755 /home/${{ parameters.celestiaUser }}
+            echo "✅ Home directory created for existing user"
+          fi
+
+          # Ensure user is in sudo group
+          sudo usermod -aG sudo ${{ parameters.celestiaUser }}
+
+          # Ensure limited passwordless sudo is configured even if user exists
+          echo "${{ parameters.celestiaUser }} ALL=(ALL) NOPASSWD:/bin/systemctl start celestia-light, /bin/systemctl stop celestia-light, /bin/systemctl restart celestia-light, /bin/systemctl status celestia-light, /bin/systemctl enable celestia-light, /bin/systemctl disable celestia-light, /bin/systemctl daemon-reload" | sudo tee /etc/sudoers.d/${{ parameters.celestiaUser }}
+          sudo chmod 440 /etc/sudoers.d/${{ parameters.celestiaUser }}
+        fi
+
+        # Ensure proper ownership and permissions for celestia user
+        sudo chown -R ${{ parameters.celestiaUser }}:${{ parameters.celestiaUser }} /home/${{ parameters.celestiaUser }}
+        sudo chmod 755 /home/${{ parameters.celestiaUser }}
+
+        # Create .bash_profile for celestia user
+        sudo -u ${{ parameters.celestiaUser }} touch /home/${{ parameters.celestiaUser }}/.bash_profile
+        sudo -u ${{ parameters.celestiaUser }} chmod 644 /home/${{ parameters.celestiaUser }}/.bash_profile
+
+        # Create necessary directories
+        sudo -u ${{ parameters.celestiaUser }} mkdir -p /home/${{ parameters.celestiaUser }}/{.local,bin,go}
+
+        # Set up basic environment
+        sudo -u ${{ parameters.celestiaUser }} bash -c 'echo "# Environment setup for Celestia" >> /home/${{ parameters.celestiaUser }}/.bash_profile'
+        sudo -u ${{ parameters.celestiaUser }} bash -c 'echo "export HOME=/home/${{ parameters.celestiaUser }}" >> /home/${{ parameters.celestiaUser }}/.bash_profile'
+
+        # Verify user setup
+        echo "👤 Celestia user info:"
+        id ${{ parameters.celestiaUser }}
+
+        echo "✅ System dependencies and celestia user setup completed!"
+
+  - template: ../../common/ssh-execution.yml
+    parameters:
+      sshKeyFile: ${{ parameters.sshKeyFile }}
+      remoteHost: ${{ parameters.remoteHost }}
+      remoteUser: ${{ parameters.remoteUser }}
+      displayName: '⚙️ Install Go'
+      scriptContent: |
+        # Install Go as the main user (who has sudo access)
+        echo "🔧 Installing Go 1.22.8..."
+        sudo rm -rf /usr/local/go
+
+        # Download with timeout
+        if timeout 300 curl -L https://go.dev/dl/go1.22.8.linux-amd64.tar.gz | sudo tar -xzf - -C /usr/local; then
+          echo "✅ Go downloaded and extracted successfully"
+        else
+          echo "❌ Go installation failed or timed out"
+          exit 1
+        fi
+
+        # Set up Go environment for celestia user
+        sudo -u ${{ parameters.celestiaUser }} bash << 'SETUP_GO_ENV'
+        cd ~
+
+        # Add Go to PATH in celestia user's profile
+        echo 'export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin' >> $HOME/.bash_profile
+
+        # Create go directory structure
+        mkdir -p $HOME/go/bin
+
+        # Source the profile to make go available
+        source $HOME/.bash_profile
+
+        # Verify Go installation
+        echo "🧪 Verifying Go installation for celestia user..."
+        go version || echo "Go verification failed - will retry in next step"
+
+        SETUP_GO_ENV
+
+        # Verify Go is accessible system-wide
+        echo "🧪 System-wide Go verification..."
+        /usr/local/go/bin/go version
+
+        # Ensure celestia user has proper permissions
+        echo "🔐 Setting up celestia user permissions..."
+
+        # Make sure celestia user can access Go binaries
+        sudo chmod 755 /usr/local/go
+        sudo chmod -R 755 /usr/local/go/bin
+
+        # Verify celestia user can access Go
+        echo "🧪 Final verification - celestia user Go access..."
+        sudo -u ${{ parameters.celestiaUser }} bash -c 'source ~/.bash_profile && go version' || {
+          echo "⚠️ Go verification failed for celestia user, but continuing..."
+          echo "📍 Go binary location: $(which go 2>/dev/null || echo 'not found')"
+          echo "📍 /usr/local/go/bin/go exists: $(test -f /usr/local/go/bin/go && echo 'yes' || echo 'no')"
+        }

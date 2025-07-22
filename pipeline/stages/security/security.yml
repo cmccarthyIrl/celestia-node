@@ -1,0 +1,245 @@
+parameters:
+  - name: enableValidation
+    type: boolean
+    default: true
+  - name: trustedIpRanges
+    type: string
+    default: "127.0.0.1/32"  # Default: Only localhost access - modify for production
+  - name: enableFirewall
+    type: boolean
+    default: true
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+
+steps:
+  - ${{ if parameters.enableValidation }}:
+    - task: Bash@3
+      displayName: 🔍 Validate Prerequisites
+      inputs:
+        targetType: inline
+        script: |
+          # Validate required variables
+          echo "Validating required environment variables..."
+
+          required_vars=("CELESTIA_USER" "SSH_KEY_FILE" "REMOTE_HOST" "REMOTE_USER" "RPC_PORT" "GATEWAY_PORT")
+          missing_vars=()
+
+          for var in "${required_vars[@]}"; do
+            if [ -z "${!var}" ]; then
+              missing_vars+=("$var")
+              echo "⚠️  Required variable $var is not set"
+            else
+              echo "✅ Variable $var is set"
+            fi
+          done
+
+          if [ ${#missing_vars[@]} -gt 0 ]; then
+            echo "❌ Missing required variables: ${missing_vars[*]}"
+            exit 1
+          fi
+
+          echo "🎉 All required variables are validated successfully!"
+      continueOnError: false
+
+  - ${{ if and(parameters.enableValidation, parameters.enableFirewall) }}:
+    - task: DownloadSecureFile@1
+      name: downloadKey
+      inputs:
+        secureFile: '${{ parameters.sshKeyFile }}'
+
+    - task: Bash@3
+      displayName: '🔑 Setup SSH Key'
+      inputs:
+        targetType: inline
+        script: |
+          mkdir -p ~/.ssh
+          cp $(downloadKey.secureFilePath) ~/.ssh/${{ parameters.sshKeyFile }}
+          chmod 600 ~/.ssh/${{ parameters.sshKeyFile }}
+          ssh-keyscan -H ${{ parameters.remoteHost }} >> ~/.ssh/known_hosts
+
+    - task: Bash@3
+      displayName: 🔒 Configure Network Security
+      inputs:
+        targetType: inline
+        script: |
+          echo "🔒 Configuring network security and firewall..."
+
+          # Parse trusted IP ranges
+          TRUSTED_IPS="${{ parameters.trustedIpRanges }}"
+          echo "🌐 Trusted IP ranges: $TRUSTED_IPS"
+
+          # Connect to remote host and configure firewall
+          ssh -i ~/.ssh/${SSH_KEY_FILE} ${REMOTE_USER}@${REMOTE_HOST} << EOF
+          set -e
+
+          echo "🛡️ Installing and configuring UFW firewall..."
+
+          # Install UFW if not present
+          if ! command -v ufw &> /dev/null; then
+            echo "📦 Installing UFW..."
+            sudo apt-get update
+            sudo apt-get install -y ufw
+          fi
+
+          # Reset UFW to default state
+          echo "🔄 Resetting UFW to default state..."
+          sudo ufw --force reset
+
+          # Set default policies
+          echo "🚫 Setting default deny incoming policy..."
+          sudo ufw default deny incoming
+
+          echo "✅ Setting default allow outgoing policy..."
+          sudo ufw default allow outgoing
+
+          # Allow SSH access on standard port only
+          echo "🔑 Allowing SSH access..."
+          sudo ufw allow 22/tcp comment "SSH (standard port)"
+
+          # Allow port 2121 for general internet access from any IP (always open)
+          echo "🌐 Allowing port 2121 for internet access from ANY IP (0.0.0.0/0)..."
+          sudo ufw allow 2121/tcp comment "Internet access (port 2121 - ANY IP)"
+
+          # Clean up any previous SSH configuration for port 2121
+          echo "🧹 Cleaning up any previous SSH configuration for port 2121..."
+
+          # Remove any existing iptables rules for port 2121 SSH
+          sudo iptables -D INPUT -p tcp --dport 2121 -j ACCEPT 2>/dev/null || true
+          sudo iptables -D INPUT -p tcp --dport 2121 -m state --state NEW -j ACCEPT 2>/dev/null || true
+
+          # Remove any SSH-related rate limiting rules for port 2121
+          sudo iptables -D INPUT -p tcp --dport 2121 -m state --state NEW -m recent --set --name ssh_2121 2>/dev/null || true
+          sudo iptables -D INPUT -p tcp --dport 2121 -m state --state NEW -m recent --update --seconds 60 --hitcount 6 --name ssh_2121 -j DROP 2>/dev/null || true
+          sudo iptables -D INPUT -p tcp --dport 2121 -m recent --update --seconds 60 --hitcount 6 --name ssh_2121 -j LOG --log-prefix "SSH_2121_RATE_LIMIT: " 2>/dev/null || true
+
+          # CRITICAL SECURITY CHECK: Fail if SSH service is listening on port 2121
+          if sudo ss -tlnp | grep -q ":2121.*ssh" 2>/dev/null; then
+            echo "❌ CRITICAL SECURITY ERROR: SSH service is listening on port 2121!"
+            echo "🚨 This is a significant security risk that must be addressed immediately."
+            echo "🔧 SSH should only listen on port 22 (standard SSH port)."
+            echo "💡 To fix this issue:"
+            echo "   1. Edit /etc/ssh/sshd_config"
+            echo "   2. Remove or comment out any 'Port 2121' lines"
+            echo "   3. Ensure only 'Port 22' is configured"
+            echo "   4. Restart SSH service: sudo systemctl restart sshd"
+            echo "🛑 Deployment cannot continue with SSH on port 2121 - FAILING TASK"
+            exit 1
+          fi
+
+          echo "✅ Port 2121 cleanup completed - SSH security verified"
+
+          # Allow Celestia light node ports based on configuration
+          echo "🌟 Configuring Celestia light node access..."
+          echo "ℹ️  Note: Port 2121 is always open to all IPs (0.0.0.0/0)"
+          echo "🔐 Celestia RPC/Gateway ports will use trusted IP ranges: $TRUSTED_IPS"
+
+          # Parse trusted IP ranges for Celestia node access
+          if [ -n "$TRUSTED_IPS" ] && [ "$TRUSTED_IPS" != "" ]; then
+            echo "🌐 Configuring Celestia access for trusted IP ranges: $TRUSTED_IPS"
+
+            # Split trusted IPs by comma and configure each
+            IFS=',' read -ra IP_ARRAY <<< "$TRUSTED_IPS"
+            for ip_range in "\${IP_ARRAY[@]}"; do
+              ip_range=\$(echo "\$ip_range" | xargs)  # Trim whitespace
+              echo "🔐 Allowing Celestia access from: \$ip_range"
+
+              if [ "\$ip_range" = "0.0.0.0/0" ]; then
+                echo "⚠️  WARNING: Allowing Celestia RPC/Gateway from ANY IP"
+                sudo ufw allow ${RPC_PORT}/tcp comment "Celestia RPC (ANY IP)"
+                sudo ufw allow ${GATEWAY_PORT}/tcp comment "Celestia Gateway (ANY IP)"
+              else
+                echo "✅ Restricting Celestia RPC/Gateway to trusted IP: \$ip_range"
+                sudo ufw allow from \$ip_range to any port ${RPC_PORT} comment "Celestia RPC (\$ip_range)"
+                sudo ufw allow from \$ip_range to any port ${GATEWAY_PORT} comment "Celestia Gateway (\$ip_range)"
+              fi
+            done
+
+            # Configure advanced rate limiting using iptables for high-volume HTTP traffic
+            echo "🚀 Configuring advanced rate limiting for Celestia light node..."
+
+            # Install iptables-persistent for rule persistence
+            sudo apt-get install -y iptables-persistent
+
+            # Rate limit RPC port (allowing bursts for light node operations)
+            sudo iptables -I INPUT -p tcp --dport ${RPC_PORT} -m state --state NEW -m recent --set --name celestia_rpc
+            sudo iptables -I INPUT -p tcp --dport ${RPC_PORT} -m state --state NEW -m recent --update --seconds 60 --hitcount 100 --name celestia_rpc -j DROP
+
+            # Rate limit Gateway port (allowing higher burst for API requests)
+            sudo iptables -I INPUT -p tcp --dport ${GATEWAY_PORT} -m state --state NEW -m recent --set --name celestia_gateway
+            sudo iptables -I INPUT -p tcp --dport ${GATEWAY_PORT} -m state --state NEW -m recent --update --seconds 60 --hitcount 200 --name celestia_gateway -j DROP
+
+            # Log dropped connections for monitoring
+            sudo iptables -I INPUT -p tcp --dport ${RPC_PORT} -m recent --update --seconds 60 --hitcount 100 --name celestia_rpc -j LOG --log-prefix "CELESTIA_RPC_RATE_LIMIT: "
+            sudo iptables -I INPUT -p tcp --dport ${GATEWAY_PORT} -m recent --update --seconds 60 --hitcount 200 --name celestia_gateway -j LOG --log-prefix "CELESTIA_GATEWAY_RATE_LIMIT: "
+
+            # Save iptables rules
+            sudo sh -c 'iptables-save > /etc/iptables/rules.v4'
+
+            # Verify iptables-persistent service is enabled and will load rules on boot
+            echo "🔄 Verifying iptables-persistent service configuration..."
+
+            # Enable netfilter-persistent service (iptables-persistent dependency)
+            sudo systemctl enable netfilter-persistent
+
+            # Verify the service is enabled
+            if sudo systemctl is-enabled netfilter-persistent >/dev/null 2>&1; then
+              echo "✅ netfilter-persistent service is enabled - rules will load on boot"
+            else
+              echo "❌ ERROR: netfilter-persistent service is not enabled"
+              echo "🔧 Attempting to enable service..."
+              sudo systemctl enable netfilter-persistent
+              if sudo systemctl is-enabled netfilter-persistent >/dev/null 2>&1; then
+                echo "✅ Successfully enabled netfilter-persistent service"
+              else
+                echo "❌ CRITICAL: Failed to enable netfilter-persistent service"
+                echo "🚨 iptables rules may not persist after reboot"
+                exit 1
+              fi
+            fi
+
+            # Verify rules file exists and is readable
+            if [ -f /etc/iptables/rules.v4 ]; then
+              echo "✅ iptables rules saved to /etc/iptables/rules.v4"
+              echo "📊 Rules file size: $(wc -l < /etc/iptables/rules.v4) lines"
+            else
+              echo "❌ ERROR: iptables rules file not found at /etc/iptables/rules.v4"
+              exit 1
+            fi
+
+            echo "✅ Rate limiting configured:"
+            echo "  - RPC Port ${RPC_PORT}: Max 100 new connections per minute"
+            echo "  - Gateway Port ${GATEWAY_PORT}: Max 200 new connections per minute"
+            echo "  - Dropped connections will be logged"
+          else
+            echo "🔒 No trusted IP ranges specified - Celestia ports will NOT be opened"
+            echo "ℹ️  SSH access (port 22) and internet access (port 2121) will be available"
+          fi
+
+          # Additional security: Allow SSH without rate limiting for testing
+          echo "🛡️ Configuring SSH access without rate limiting..."
+          sudo ufw allow 22/tcp comment "SSH (no rate limiting for testing)"
+
+          # Configure rate limiting for port 2121 internet access
+          echo "🌐 Configuring rate limiting for port 2121 internet access..."
+          sudo iptables -I INPUT -p tcp --dport 2121 -m state --state NEW -m recent --set --name internet_2121
+          sudo iptables -I INPUT -p tcp --dport 2121 -m state --state NEW -m recent --update --seconds 60 --hitcount 300 --name internet_2121 -j DROP
+          sudo iptables -I INPUT -p tcp --dport 2121 -m recent --update --seconds 60 --hitcount 300 --name internet_2121 -j LOG --log-prefix "PORT_2121_RATE_LIMIT: "
+
+          # Enable UFW
+          echo "🔥 Enabling UFW firewall..."
+          sudo ufw --force enable
+
+          # Show firewall status
+          echo "📊 Current firewall status:"
+          sudo ufw status verbose
+
+          # Additional security checks
+          echo "🔍 Additional security verification..."
+          echo "📊 Open ports:"
+          sudo netstat -tlnp | grep -E ':(22|2121|${RPC_PORT}|${GATEWAY_PORT})\s' || echo "No expected ports found listening"
+
+          echo "✅ Network security configuration completed!"
+          EOF
+      continueOnError: false

@@ -1,0 +1,79 @@
+parameters:
+  - name: celestiaUser
+    type: string
+  - name: celestiaNetwork
+    type: string
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+  - name: remoteUser
+    type: string
+  - name: rpcPort
+    type: string
+  - name: gatewayPort
+    type: string
+
+steps:
+  - task: Bash@3
+    displayName: '⚙️ Create Systemd Service'
+    inputs:
+      targetType: inline
+      script: |
+        echo "Creating systemd service..."
+
+        ssh -i ~/.ssh/${{ parameters.sshKeyFile }} ${{ parameters.remoteUser }}@${{ parameters.remoteHost }} << 'EOF'
+        # Find the correct celestia binary path
+        CELESTIA_BIN=$(sudo -u ${{ parameters.celestiaUser }} bash -c 'source ~/.bash_profile && which celestia')
+
+        if [ -z "$CELESTIA_BIN" ]; then
+          echo "❌ Celestia binary not found in PATH"
+          echo "🔍 Checking common locations..."
+          sudo -u ${{ parameters.celestiaUser }} bash -c 'ls -la ~/go/bin/celestia* 2>/dev/null || echo "No celestia binaries in ~/go/bin/"'
+          exit 1
+        fi
+
+        echo "📍 Found celestia binary at: $CELESTIA_BIN"
+
+        # Create systemd service file
+        sudo tee /etc/systemd/system/celestia-light.service > /dev/null << SERVICE_EOF
+        [Unit]
+        Description=Celestia Light Node
+        After=network-online.target
+        Wants=network-online.target
+
+        [Service]
+        Type=simple
+        User=${{ parameters.celestiaUser }}
+        Group=${{ parameters.celestiaUser }}
+        ExecStart=$CELESTIA_BIN light start \
+        --p2p.network ${{ parameters.celestiaNetwork }} \
+        --rpc.addr 0.0.0.0 --rpc.port ${{ parameters.rpcPort }} \
+        --gateway.addr 0.0.0.0 --gateway.port ${{ parameters.gatewayPort }} \
+        --node.store /home/${{ parameters.celestiaUser }}/.celestia-light-${{ parameters.celestiaNetwork }}
+        TimeoutStopSec=120
+        TimeoutStartSec=60
+        KillMode=control-group
+        KillSignal=SIGTERM
+        SendSIGKILL=yes
+        RestartSec=30
+        LimitNOFILE=65535
+        Environment=PATH=/usr/local/go/bin:/home/${{ parameters.celestiaUser }}/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        Environment=HOME=/home/${{ parameters.celestiaUser }}
+        WorkingDirectory=/home/${{ parameters.celestiaUser }}
+
+        StandardOutput=journal
+        StandardError=journal
+        SyslogIdentifier=celestia-light
+
+        [Install]
+        WantedBy=multi-user.target
+        SERVICE_EOF
+
+
+        # Reload systemd and enable service
+        sudo systemctl daemon-reload
+        sudo systemctl enable celestia-light
+
+        echo "✅ Systemd service created and enabled!"
+        EOF

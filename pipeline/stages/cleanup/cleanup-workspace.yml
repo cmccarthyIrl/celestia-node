@@ -1,0 +1,54 @@
+steps:
+  - task: Bash@3
+    displayName: '🧹 Cleanup: Project Directory Deep Clean'
+    condition: always()
+    inputs:
+      targetType: inline
+      script: |
+        echo "🧹 Deep cleaning project workspace..."
+
+        # Function to clean celestia artifacts
+        clean_celestia_artifacts() {
+            local base_dir="$1"
+            local description="$2"
+
+            echo "Cleaning celestia artifacts from $description..."
+
+            # Use patterns from variables
+            for pattern in celestia-node .celestia-app .celestia-light-* celestia-node-temp; do
+                find "$base_dir" -name "$pattern" -type f -delete 2>/dev/null || true
+                find "$base_dir" -name "$pattern" -type d -exec rm -rf {} + 2>/dev/null || true
+            done
+
+            # Generic celestia pattern cleanup
+            find "$base_dir" -name "*celestia*" -type f -delete 2>/dev/null || echo "No celestia files to clean in $description"
+            find "$base_dir" -name "*celestia*" -type d -exec rm -rf {} + 2>/dev/null || echo "No celestia directories to clean in $description"
+        }
+
+        # Get current working directory info
+        echo "Current working directory: $(pwd)"
+        echo "Agent build directory: $(Agent.BuildDirectory)"
+        echo "Agent work folder: $(Agent.WorkFolder)"
+
+        # Clean celestia-related artifacts from workspace
+        clean_celestia_artifacts "$(Agent.BuildDirectory)" "workspace"
+
+        # Clean temporary and log files
+        echo "Cleaning temporary files and logs..."
+        find "$(Agent.BuildDirectory)" -name "*.log" -not -name "pipeline*.log" -delete 2>/dev/null || echo "No log files to clean"
+        find "$(Agent.BuildDirectory)" -name "temp*" -type d -exec rm -rf {} + 2>/dev/null || echo "No temp directories to clean"
+
+        # Clean downloaded artifacts
+        echo "Cleaning download directories..."
+        rm -rf "$(Agent.BuildDirectory)/downloads" 2>/dev/null || echo "No downloads directory to clean"
+        rm -rf "$(Agent.BuildDirectory)/backups" 2>/dev/null || echo "No backups directory to clean"
+
+        # Display final workspace size
+        echo "Final workspace disk usage:"
+        du -sh "$(Agent.BuildDirectory)" 2>/dev/null || echo "Could not calculate workspace size"
+
+        # List any remaining celestia-related files (for verification)
+        echo "Checking for any remaining celestia files in workspace:"
+        find "$(Agent.BuildDirectory)" -name "*celestia*" 2>/dev/null | head -5 || echo "✅ No celestia files found in workspace"
+
+        echo "🎯 Project directory cleanup completed!"

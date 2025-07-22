@@ -1,0 +1,102 @@
+parameters:
+  - name: celestiaUser
+    type: string
+  - name: celestiaVersion
+    type: string
+  - name: celestiaNetwork
+    type: string
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+  - name: remoteUser
+    type: string
+  - name: rpcPort
+    type: string
+  - name: gatewayPort
+    type: string
+  - name: deploymentSteps
+    type: object
+    default:
+      setupEnvironment: true
+      downloadSource: true
+      buildNode: true
+      installNode: true
+      initializeNode: true
+      verifyConfig: true
+      startNode: true
+
+steps:
+  # Setup Environment
+  - ${{ if parameters.deploymentSteps.setupEnvironment }}:
+    - template: ./deployment-setup-environment.yml
+      parameters:
+        celestiaUser: ${{ parameters.celestiaUser }}
+        sshKeyFile: ${{ parameters.sshKeyFile }}
+        remoteHost: ${{ parameters.remoteHost }}
+        remoteUser: ${{ parameters.remoteUser }}
+
+  # Download and Build
+  - ${{ if or(parameters.deploymentSteps.downloadSource, parameters.deploymentSteps.buildNode) }}:
+    - template: ./deployment-build-configure.yml
+      parameters:
+        celestiaUser: ${{ parameters.celestiaUser }}
+        celestiaVersion: ${{ parameters.celestiaVersion }}
+        sshKeyFile: ${{ parameters.sshKeyFile }}
+        remoteHost: ${{ parameters.remoteHost }}
+        remoteUser: ${{ parameters.remoteUser }}
+        operations:
+          download: ${{ parameters.deploymentSteps.downloadSource }}
+          build: ${{ parameters.deploymentSteps.buildNode }}
+          configure: false
+
+  # Install Node
+  - ${{ if parameters.deploymentSteps.installNode }}:
+    - template: ./deployment-install-dependencies.yml
+      parameters:
+        celestiaUser: ${{ parameters.celestiaUser }}
+        sshKeyFile: ${{ parameters.sshKeyFile }}
+        remoteHost: ${{ parameters.remoteHost }}
+        remoteUser: ${{ parameters.remoteUser }}
+
+  # Initialize Node
+  - ${{ if parameters.deploymentSteps.initializeNode }}:
+    - template: ./deployment-initialize.yml
+      parameters:
+        celestiaUser: ${{ parameters.celestiaUser }}
+        celestiaNetwork: ${{ parameters.celestiaNetwork }}
+        sshKeyFile: ${{ parameters.sshKeyFile }}
+        remoteHost: ${{ parameters.remoteHost }}
+        remoteUser: ${{ parameters.remoteUser }}
+
+  # Verify Configuration
+  - ${{ if parameters.deploymentSteps.verifyConfig }}:
+    - template: ./deployment-verify-configuration.yml
+      parameters:
+        celestiaUser: ${{ parameters.celestiaUser }}
+        celestiaNetwork: ${{ parameters.celestiaNetwork }}
+        sshKeyFile: ${{ parameters.sshKeyFile }}
+        remoteHost: ${{ parameters.remoteHost }}
+        remoteUser: ${{ parameters.remoteUser }}
+
+  # Start Node (Setup Service)
+  - ${{ if parameters.deploymentSteps.startNode }}:
+    - template: ./deployment-setup-service.yml
+      parameters:
+        celestiaUser: ${{ parameters.celestiaUser }}
+        celestiaNetwork: ${{ parameters.celestiaNetwork }}
+        sshKeyFile: ${{ parameters.sshKeyFile }}
+        remoteHost: ${{ parameters.remoteHost }}
+        remoteUser: ${{ parameters.remoteUser }}
+        rpcPort: ${{ parameters.rpcPort }}
+        gatewayPort: ${{ parameters.gatewayPort }}
+
+  - ${{ if parameters.deploymentSteps.startNode }}:
+    - template: ./deployment-start-service.yml
+      parameters:
+        celestiaUser: ${{ parameters.celestiaUser }}
+        celestiaNetwork: ${{ parameters.celestiaNetwork }}
+        sshKeyFile: ${{ parameters.sshKeyFile }}
+        remoteHost: ${{ parameters.remoteHost }}
+        remoteUser: ${{ parameters.remoteUser }}
+        rpcPort: ${{ parameters.rpcPort }}

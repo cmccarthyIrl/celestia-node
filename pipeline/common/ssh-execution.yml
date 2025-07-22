@@ -1,0 +1,27 @@
+parameters:
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+  - name: remoteUser
+    type: string
+  - name: scriptContent
+    type: string
+  - name: displayName
+    type: string
+    default: 'Execute SSH Command'
+  - name: condition
+    type: string
+    default: ''
+
+steps:
+  - task: Bash@3
+    displayName: '${{ parameters.displayName }}'
+    ${{ if ne(parameters.condition, '') }}:
+      condition: ${{ parameters.condition }}
+    inputs:
+      targetType: inline
+      script: |
+        ssh -i ~/.ssh/${{ parameters.sshKeyFile }} ${{ parameters.remoteUser }}@${{ parameters.remoteHost }} << 'EOF'
+        ${{ parameters.scriptContent }}
+        EOF

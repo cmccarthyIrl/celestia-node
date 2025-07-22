@@ -1,0 +1,115 @@
+trigger: none
+variables:
+  - group: celestial-lightning-variable-group
+  - template: variables/celestia.yml
+    parameters:
+      pool: your-pool-name
+      celestiaNetwork: mocha-4
+      celestiaVersion: v0.23.3-mocha
+
+
+pool: $(POOL_NAME)
+stages:
+  - stage: SecurityScan
+    displayName: 🔒 Security Validation
+    condition: 'always()'
+    jobs:
+      - job: SecurityChecks
+        displayName: 🔒 Run Security Checks
+        steps:
+          - checkout: self
+            displayName: 📥 Checkout source code
+
+          - task: NodeTool@0
+            displayName: '⚙️ Setup Node.js'
+            inputs:
+              versionSpec: '24.x'
+
+          - task: Bash@3
+            displayName: ⚙️ Install Dependencies
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Installing npm dependencies..."
+                npm ci
+                echo "Dependencies installed successfully!"
+
+          - script: |
+              npm audit --audit-level=high
+            displayName: 🔍 NPM Security Audit
+
+          # Validate Prerequisites
+          - template: stages/security/security.yml
+            parameters:
+              enableValidation: true
+              enableFirewall: true
+              trustedIpRanges: ""  # Not needed for SSH-only access
+              sshKeyFile: $(SSH_KEY_FILE)
+              remoteHost: $(REMOTE_HOST)
+
+  - stage: DeployCelestiaNode
+    displayName: 🌟 Celestia Light Node
+    dependsOn: SecurityScan
+    condition: 'or(succeeded(), eq(variables[''Build.Reason''], ''Manual''))'
+    jobs:
+      - job: DeployNode
+        displayName: 🌟 Deploy Celestia Light Node
+        cancelTimeoutInMinutes: 60
+        workspace:
+          clean: all
+        steps:
+          # Deploy Celestia Node using consolidated task group
+          - template: stages/deployment/deployment.yml
+            parameters:
+              celestiaUser: $(CELESTIA_USER)
+              celestiaVersion: $(CELESTIA_VERSION)
+              celestiaNetwork: $(CELESTIA_NETWORK)
+              sshKeyFile: $(SSH_KEY_FILE)
+              remoteHost: $(REMOTE_HOST)
+              remoteUser: $(REMOTE_USER)
+              rpcPort: $(RPC_PORT)
+              gatewayPort: $(GATEWAY_PORT)
+              deploymentSteps:
+                setupEnvironment: true
+                downloadSource: true
+                buildNode: true
+                installNode: true
+                initializeNode: true
+                startNode: true
+
+  - stage: TestCelestiaNode
+    displayName: 🔍 Test & Validation
+    dependsOn: DeployCelestiaNode
+    condition: or(succeeded(), eq(dependencies.DeployCelestiaNode.result, 'Succeeded'))
+    jobs:
+      - job: RunTests
+        displayName: 🔍 Run Tests and Validation
+        steps:
+          # Run Tests and Validation
+          - template: stages/testing/test.yml
+            parameters:
+              celestiaRpcUrl: 'http://$(REMOTE_HOST):$(RPC_PORT)'
+              celestiaGatewayUrl: 'http://$(REMOTE_HOST):$(GATEWAY_PORT)'
+              testingSteps:
+                runTests: true
+                publishResults: false
+
+  - stage: CleanupResources
+    displayName: 🧹 Cleanup
+    dependsOn: TestCelestiaNode
+    condition: always()
+    jobs:
+      - job: CleanupOperations
+        displayName: 🧹 Cleanup Operations
+        steps:
+          # Cleanup Operations
+          - template: stages/cleanup/cleanup.yml
+            parameters:
+              celestiaUser: $(CELESTIA_USER)
+              rpcPort: $(RPC_PORT)
+              gatewayPort: $(GATEWAY_PORT)
+              sshKeyFile: $(SSH_KEY_FILE)
+              remoteHost: $(REMOTE_HOST)
+              remoteUser: $(REMOTE_USER)
+              enableDebug: true
+              removeUserHomeDirectory: false

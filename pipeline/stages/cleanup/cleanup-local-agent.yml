@@ -1,0 +1,33 @@
+parameters:
+  - name: sshKeyFile
+    type: string
+
+steps:
+  - task: Bash@3
+    displayName: '🧹 Cleanup: Local Agent Security Cleanup'
+    condition: always()
+    inputs:
+      targetType: inline
+      script: |
+        echo "Final cleanup of local agent security files..."
+
+        # Remove SSH keys from agent (security cleanup)
+        echo "Cleaning SSH configuration..."
+        rm -f ~/.ssh/${{ parameters.sshKeyFile }} 2>/dev/null || echo "SSH key cleanup completed"
+
+        echo "🎯 Security cleanup completed successfully!"
+
+  - task: DeleteFiles@1
+    displayName: '🧹 Cleanup: Azure DevOps Workspace'
+    condition: always()
+    inputs:
+      SourceFolder: '$(Agent.BuildDirectory)'
+      Contents: |
+        **/*celestia*
+        **/*.log
+        **/downloads/**
+        **/backups/**
+        **/temp*/**
+        **/.celestia*/**
+        **/celestia-node*/**
+      RemoveSourceFolder: false

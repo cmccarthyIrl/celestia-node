@@ -1,0 +1,82 @@
+parameters:
+  - name: enableDebug
+    type: boolean
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+  - name: remoteUser
+    type: string
+
+steps:
+  - template: ../../common/ssh-execution.yml
+    parameters:
+      sshKeyFile: ${{ parameters.sshKeyFile }}
+      remoteHost: ${{ parameters.remoteHost }}
+      remoteUser: ${{ parameters.remoteUser }}
+      displayName: '🧹 Cleanup Verification: Remote Check'
+      condition: "eq('${{ parameters.enableDebug }}', 'true')"
+      scriptContent: |
+        echo "=== Cleanup Verification ==="
+
+        echo "=== Process Check ==="
+        CELESTIA_PROCS=$(pgrep -f celestia 2>/dev/null || true)
+        if [ -n "$CELESTIA_PROCS" ]; then
+            echo "⚠️ Found remaining processes:"
+            for pid in $CELESTIA_PROCS; do
+                if [ -e "/proc/$pid" ]; then
+                    OWNER=$(ps -o user= -p "$pid" 2>/dev/null || echo "unknown")
+                    CMD=$(ps -o cmd= -p "$pid" 2>/dev/null || echo "unknown")
+                    STATE=$(ps -o stat= -p "$pid" 2>/dev/null || echo "unknown")
+                    PPID=$(ps -o ppid= -p "$pid" 2>/dev/null || echo "unknown")
+                    echo "  PID: $pid, Owner: $OWNER, State: $STATE, Parent: $PPID"
+                    echo "  Command: $CMD"
+                    echo "  ---"
+                fi
+            done
+
+            # Show process tree for context
+            echo "Process tree context:"
+            pstree -p $CELESTIA_PROCS 2>/dev/null || echo "pstree not available"
+        else
+            echo "✅ No celestia processes found"
+        fi
+
+        echo "=== PID File Check ==="
+        PID_FILES=$(find /var/run /tmp /home -name "*celestia*.pid" 2>/dev/null || true)
+        if [ -n "$PID_FILES" ]; then
+            echo "⚠️ Found remaining PID files:"
+            echo "$PID_FILES"
+        else
+            echo "✅ No celestia PID files found"
+        fi
+
+        echo "=== Directory Check ==="
+        echo "Searching for celestia directories in all user homes and common paths:"
+        FOUND_DIRS=$(find /home /opt /var -name "*celestia*" -type d 2>/dev/null | head -20)
+        if [ -n "$FOUND_DIRS" ]; then
+            echo "⚠️ Found remaining directories:"
+            echo "$FOUND_DIRS"
+        else
+            echo "✅ No celestia directories found"
+        fi
+
+        echo "=== Binary Check ==="
+        FOUND_BINS=$(find /usr /opt -name "*celestia*" -o -name "*cel-key*" 2>/dev/null)
+        if [ -n "$FOUND_BINS" ]; then
+            echo "⚠️ Found remaining binaries:"
+            echo "$FOUND_BINS"
+        else
+            echo "✅ No celestia binaries found"
+        fi
+
+        echo "=== Service Check ==="
+        CELESTIA_SERVICES=$(systemctl list-units --all --no-pager | grep celestia || true)
+        if [ -n "$CELESTIA_SERVICES" ]; then
+            echo "⚠️ Found remaining services:"
+            echo "$CELESTIA_SERVICES"
+        else
+            echo "✅ No celestia services found"
+        fi
+
+        echo "🎯 Enhanced cleanup verification completed"

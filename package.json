@@ -1,0 +1,42 @@
+{
+  "name": "celestia-deployment-framework",
+  "version": "1.0.0",
+  "description": "TypeScript framework for deploying Celestia light nodes",
+  "main": "dist/Index.js",
+  "scripts": {
+    "test": "npx playwright test",
+    "test:pipeline": "npx playwright test --grep=@DeploymentWorkflow --project=pipeline",
+    "lint": "eslint \"src/**/*.{ts,spec.ts}\"",
+    "lint:fix": "eslint \"src/**/*.{ts,spec.ts}\" --fix",
+    "format": "prettier --write \"src/**/*.{ts,spec.ts}\" && eslint \"src/**/*.{ts,spec.ts}\" --fix",
+    "format:check": "prettier --check \"src/**/*.{ts,spec.ts}\"",
+    "check": "npm run lint && npm run format:check"
+  },
+  "keywords": [
+    "celestia",
+    "blockchain",
+    "deployment",
+    "pipeline"
+  ],
+  "author": "Craig",
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^9.31.0",
+    "@playwright/test": "^1.54.1",
+    "@types/node": "^24.0.14",
+    "@types/ssh2": "^1.15.5",
+    "@typescript-eslint/eslint-plugin": "^8.37.0",
+    "@typescript-eslint/parser": "^8.37.0",
+    "eslint": "^9.31.0",
+    "jest": "^29.6.0",
+    "prettier": "^3.6.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "commander": "^11.0.0",
+    "dotenv": "^16.3.1",
+    "joi": "^17.9.2",
+    "ssh2": "^1.15.0"
+  }
+}

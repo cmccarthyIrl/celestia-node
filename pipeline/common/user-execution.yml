@@ -1,0 +1,28 @@
+parameters:
+  - name: celestiaUser
+    type: string
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+  - name: remoteUser
+    type: string
+  - name: scriptContent
+    type: string
+  - name: displayName
+    type: string
+    default: 'Execute Celestia User Command'
+
+steps:
+  - template: ./ssh-execution.yml
+    parameters:
+      sshKeyFile: ${{ parameters.sshKeyFile }}
+      remoteHost: ${{ parameters.remoteHost }}
+      remoteUser: ${{ parameters.remoteUser }}
+      displayName: ${{ parameters.displayName }}
+      scriptContent: |
+        sudo -u ${{ parameters.celestiaUser }} bash << 'CELESTIA_SCRIPT'
+        cd ~
+        source $HOME/.bash_profile
+        ${{ parameters.scriptContent }}
+        CELESTIA_SCRIPT

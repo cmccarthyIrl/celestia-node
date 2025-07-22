@@ -1,0 +1,99 @@
+{
+    // File Management
+    "files.autoSave": "afterDelay",
+    "files.autoSaveDelay": 500,
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+    "files.trimFinalNewlines": true,
+    "files.exclude": {
+        "**/node_modules": true,
+        "**/dist": true,
+        "**/build": true,
+        "**/.git": true,
+        "**/.DS_Store": true
+    },
+
+    // Editor Appearance
+    "editor.fontSize": 14,
+    "editor.fontFamily": "Consolas, 'Courier New', monospace",
+    "editor.lineHeight": 1.5,
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "editor.detectIndentation": true,
+    "editor.renderWhitespace": "boundary",
+    "editor.rulers": [80, 120],
+    "editor.wordWrap": "on",
+    "editor.minimap.enabled": true,
+    "editor.bracketPairColorization.enabled": true,
+    "editor.guides.bracketPairs": true,
+
+    // Editor Behavior
+    "editor.formatOnSave": true,
+    "editor.formatOnPaste": true,
+    "editor.codeActionsOnSave": {
+        "source.fixAll": "explicit",
+        "source.organizeImports": "explicit"
+    },
+    "editor.suggestSelection": "first",
+    "editor.acceptSuggestionOnCommitCharacter": false,
+    "editor.acceptSuggestionOnEnter": "on",
+    "editor.quickSuggestions": {
+        "other": true,
+        "comments": false,
+        "strings": false
+    },
+
+    // Terminal
+    "terminal.integrated.fontSize": 12,
+    "terminal.integrated.shell.windows": "powershell.exe",
+    "terminal.integrated.cursorBlinking": true,
+    "terminal.integrated.copyOnSelection": true,
+
+    // Workbench
+    "workbench.startupEditor": "welcomePage",
+    "workbench.colorTheme": "Default Dark+",
+    "workbench.iconTheme": "vs-seti",
+    "workbench.editor.enablePreview": false,
+    "workbench.editor.closeOnFileDelete": true,
+    "workbench.tree.indent": 20,
+
+    // Explorer
+    "explorer.confirmDelete": false,
+    "explorer.confirmDragAndDrop": false,
+    "explorer.openEditors.visible": 10,
+
+    // Search
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/dist": true,
+        "**/build": true,
+        "**/.git": true
+    },
+
+    // Git
+    "git.enableSmartCommit": true,
+    "git.confirmSync": false,
+    "git.autofetch": true,
+
+    // Language-specific settings
+    "[javascript]": {
+        "editor.defaultFormatter": "vscode.typescript-language-features",
+        "editor.tabSize": 2
+    },
+    "[typescript]": {
+        "editor.defaultFormatter": "vscode.typescript-language-features",
+        "editor.tabSize": 2
+    },
+    "[json]": {
+        "editor.defaultFormatter": "vscode.json-language-features",
+        "editor.tabSize": 2
+    },
+    "[html]": {
+        "editor.defaultFormatter": "vscode.html-language-features",
+        "editor.tabSize": 2
+    },
+    "[css]": {
+        "editor.defaultFormatter": "vscode.css-language-features",
+        "editor.tabSize": 2
+    }
+}

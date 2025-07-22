@@ -1,0 +1,126 @@
+parameters:
+  - name: celestiaUser
+    type: string
+  - name: celestiaNetwork
+    type: string
+  - name: rpcPort
+    type: string
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+  - name: remoteUser
+    type: string
+
+steps:
+  - task: Bash@3
+    displayName: '🌟 Start Celestia Light Node Service'
+    inputs:
+      targetType: inline
+      script: |
+        echo "Starting Celestia light node service with enhanced process management..."
+
+        ssh -i ~/.ssh/${{ parameters.sshKeyFile }} ${{ parameters.remoteUser }}@${{ parameters.remoteHost }} << 'EOF'
+
+        # Upload and setup the process manager script
+        if [ ! -f "/usr/local/bin/celestia-process-manager.sh" ]; then
+          echo "📁 Setting up process manager..."
+          # The process manager script should be uploaded separately or created here
+          sudo mkdir -p /usr/local/bin
+          sudo chmod +x /usr/local/bin/celestia-process-manager.sh 2>/dev/null || true
+        fi
+
+        # Stop any existing service and clean up old PIDs
+        echo "🧹 Cleaning up existing processes..."
+        sudo systemctl stop celestia-light 2>/dev/null || true
+
+        # Clean up old PID files
+        sudo rm -f /var/run/celestia-*.pid /tmp/celestia-*.pid 2>/dev/null || true
+        rm -f $HOME/celestia-*.pid 2>/dev/null || true
+
+        # Clear any previous logs
+        sudo journalctl --vacuum-time=1s
+
+        # Start the service
+        echo "🚀 Starting celestia-light service..."
+        sudo systemctl start celestia-light
+
+        # Wait for startup
+        sleep 5
+
+        # Monitor the service and store its PID
+        echo "📍 Storing service PID for enhanced cleanup..."
+        if command -v celestia-process-manager.sh >/dev/null 2>&1; then
+          celestia-process-manager.sh monitor celestia-light 30
+        else
+          # Fallback: manually store the PID
+          if systemctl is-active celestia-light > /dev/null; then
+            MAIN_PID=$(systemctl show celestia-light --property MainPID --value 2>/dev/null)
+            if [ -n "$MAIN_PID" ] && [ "$MAIN_PID" != "0" ]; then
+              echo "$MAIN_PID" | sudo tee /var/run/celestia-light.pid > /dev/null
+              echo "$MAIN_PID" > /tmp/celestia-light.pid 2>/dev/null || true
+              echo "$MAIN_PID" > $HOME/celestia-light.pid 2>/dev/null || true
+              echo "✅ Stored PID $MAIN_PID for cleanup"
+            fi
+          fi
+        fi
+
+        # Check service status
+        echo "📊 Service status:"
+        sudo systemctl status celestia-light --no-pager --lines=10
+
+        # Enhanced service verification
+        if sudo systemctl is-active celestia-light > /dev/null; then
+          echo "✅ Service is running"
+
+          # Get and display PID information
+          MAIN_PID=$(systemctl show celestia-light --property MainPID --value 2>/dev/null)
+          if [ -n "$MAIN_PID" ] && [ "$MAIN_PID" != "0" ]; then
+            echo "📍 Service PID: $MAIN_PID"
+            BINARY_PATH=$(readlink -f "/proc/$MAIN_PID/exe" 2>/dev/null || echo "unknown")
+            echo "📍 Binary path: $BINARY_PATH"
+
+            # Check listening ports for verification
+            PORTS=$(lsof -Pan -p "$MAIN_PID" -i 2>/dev/null | grep LISTEN | awk '{print $9}' | sort -u | tr '\n' ' ' || echo "none")
+            echo "📍 Listening ports: $PORTS"
+          fi
+        else
+          echo "❌ Service is not running - checking for issues..."
+
+          # Show failure details
+          echo "🔍 Service failure details:"
+          sudo systemctl status celestia-light --no-pager --lines=20
+
+          # Show recent logs
+          echo "📜 Recent error logs:"
+          sudo journalctl -u celestia-light -n 30 --no-pager --since "5 minutes ago"
+
+          # Try to identify the issue
+          echo "🔧 Checking common issues..."
+          sudo -u ${{ parameters.celestiaUser }} bash -c 'source ~/.bash_profile && which celestia' || echo "Celestia binary not found in PATH"
+
+          # Check if the user exists and has proper permissions
+          id ${{ parameters.celestiaUser }} || echo "User ${{ parameters.celestiaUser }} does not exist"
+
+          # Check node store permissions
+          ls -la /home/${{ parameters.celestiaUser }}/.celestia-light-${{ parameters.celestiaNetwork }}/ || echo "Node store directory not accessible"
+        fi
+
+        # Show detailed logs regardless of status
+        echo "📜 Latest service logs:"
+        sudo journalctl -u celestia-light -n 50 --no-pager
+
+        # Verify PID storage
+        echo "🔍 Verifying PID storage:"
+        if [ -f "/var/run/celestia-light.pid" ]; then
+          PID_CONTENT=$(cat /var/run/celestia-light.pid 2>/dev/null)
+          echo "✅ PID stored in /var/run/celestia-light.pid: $PID_CONTENT"
+        elif [ -f "/tmp/celestia-light.pid" ]; then
+          PID_CONTENT=$(cat /tmp/celestia-light.pid 2>/dev/null)
+          echo "✅ PID stored in /tmp/celestia-light.pid: $PID_CONTENT"
+        else
+          echo "⚠️ Warning: No PID file found - cleanup may be less reliable"
+        fi
+
+        echo "✅ Service start process completed - check logs above for any errors"
+        EOF

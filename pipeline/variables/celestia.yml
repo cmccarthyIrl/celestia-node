@@ -1,0 +1,42 @@
+parameters:
+  - name: pool
+    type: string
+    default: 'your-pool-name'
+  - name: celestiaNetwork
+    type: string
+    default: 'mocha-4'
+  - name: celestiaVersion
+    type: string
+    default: 'v0.23.3-mocha'
+  - name: rpcPort
+    type: string
+    default: '26658'
+  - name: gatewayPort
+    type: string
+    default: '26659'
+  - name: celestiaUser
+    type: string
+    default: 'celestia'
+  - name: sshKeyFile
+    type: string
+    default: 'id_rsa.pem'
+
+variables:
+  # Network Configuration
+  CELESTIA_NETWORK: '${{ parameters.celestiaNetwork }}'
+  CELESTIA_VERSION: '${{ parameters.celestiaVersion }}'
+
+  # Port Configuration
+  RPC_PORT: '${{ parameters.rpcPort }}'
+  GATEWAY_PORT: '${{ parameters.gatewayPort }}'
+
+  # Security and Access
+  CELESTIA_USER: '${{ parameters.celestiaUser }}'
+  SSH_KEY_FILE: '${{ parameters.sshKeyFile }}'
+
+  # Remote Server Variables (from pipeline library)
+  REMOTE_HOST: '$(VM_IP_ADDRESS)'
+  REMOTE_USER: '$(VM_USER)'
+
+  # Pool Configuration
+  POOL_NAME: '${{ parameters.pool }}'

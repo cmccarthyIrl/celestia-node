@@ -1,0 +1,31 @@
+parameters:
+  - name: celestiaUser
+    type: string
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+  - name: remoteUser
+    type: string
+
+steps:
+  - template: ../../common/ssh-execution.yml
+    parameters:
+      sshKeyFile: ${{ parameters.sshKeyFile }}
+      remoteHost: ${{ parameters.remoteHost }}
+      remoteUser: ${{ parameters.remoteUser }}
+      displayName: '⚙️ Install Celestia Binaries'
+      scriptContent: |
+        # Install binaries system-wide
+        echo "📦 Installing Celestia binaries system-wide..."
+        sudo cp /home/${{ parameters.celestiaUser }}/celestia-node/build/celestia /usr/local/bin/
+        sudo cp /home/${{ parameters.celestiaUser }}/celestia-node/cel-key /usr/local/bin/
+        sudo chmod +x /usr/local/bin/celestia
+        sudo chmod +x /usr/local/bin/cel-key
+
+        # Verify installation
+        echo "🧪 Verifying installations..."
+        /usr/local/bin/celestia version && echo "✅ Celestia binary installed successfully" || echo "❌ Celestia binary verification failed"
+        /usr/local/bin/cel-key --help > /dev/null 2>&1 && echo "✅ cel-key installed successfully" || echo "❌ cel-key verification failed"
+
+        echo "✅ Celestia installation completed!"

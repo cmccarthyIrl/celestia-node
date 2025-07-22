@@ -1,0 +1,111 @@
+parameters:
+  - name: celestiaUser
+    type: string
+  - name: celestiaNetwork
+    type: string
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+  - name: remoteUser
+    type: string
+
+steps:
+  - template: ../../common/ssh-execution.yml
+    parameters:
+      sshKeyFile: ${{ parameters.sshKeyFile }}
+      remoteHost: ${{ parameters.remoteHost }}
+      remoteUser: ${{ parameters.remoteUser }}
+      displayName: '⚙️ Initialise Light Node'
+      scriptContent: |
+        sudo -u ${{ parameters.celestiaUser }} bash << 'INIT'
+        cd $HOME
+
+        # Source environment
+        source ~/.bash_profile
+
+        echo "🚀 Initialising light node for network: ${{ parameters.celestiaNetwork }}"
+
+        # Check if node store already exists
+        NODE_STORE_PATH="$HOME/.celestia-light-${{ parameters.celestiaNetwork }}"
+
+        if [ -d "$NODE_STORE_PATH" ]; then
+          echo "⚠️ Node store already exists at: $NODE_STORE_PATH"
+
+          # Check if any celestia processes are running
+          if pgrep -f "celestia.*light" > /dev/null; then
+            echo "🛑 Stopping existing celestia light node processes..."
+            pkill -f "celestia.*light" || true
+            sleep 3
+          fi
+
+          # Check if systemd service is running
+          if systemctl is-active --quiet celestia-light.service 2>/dev/null; then
+            echo "🛑 Stopping celestia-light systemd service..."
+            sudo systemctl stop celestia-light.service || true
+            sleep 2
+          fi
+
+          # # Create backup of existing store
+          # BACKUP_PATH="$HOME/.celestia-light-${{ parameters.celestiaNetwork }}-backup-$(date +%Y%m%d-%H%M%S)"
+          # echo "📦 Creating backup of existing node store: $BACKUP_PATH"
+          # cp -r "$NODE_STORE_PATH" "$BACKUP_PATH"
+
+          # Remove existing store
+          echo "🗑️ Removing existing node store..."
+          rm -rf "$NODE_STORE_PATH"
+        fi
+
+        # Initialize the light node with retry logic
+        echo "🚀 Attempting to initialize light node..."
+        INIT_SUCCESS=false
+        RETRY_COUNT=0
+        MAX_RETRIES=3
+
+        while [ "$INIT_SUCCESS" = false ] && [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+          RETRY_COUNT=$((RETRY_COUNT + 1))
+          echo "📝 Initialization attempt $RETRY_COUNT of $MAX_RETRIES"
+
+          if celestia light init --p2p.network ${{ parameters.celestiaNetwork }}; then
+            echo "✅ Light node initialized successfully"
+            INIT_SUCCESS=true
+          else
+            echo "❌ Initialization attempt $RETRY_COUNT failed"
+
+            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+              echo "🔄 Retrying after additional cleanup..."
+
+              # Additional cleanup for retry
+              NODE_STORE_PATH="$HOME/.celestia-light-${{ parameters.celestiaNetwork }}"
+              if [ -d "$NODE_STORE_PATH" ]; then
+                echo "🗑️ Removing node store for retry..."
+                rm -rf "$NODE_STORE_PATH" 2>/dev/null || true
+              fi
+
+              # Clean any remaining lock files
+              find $HOME -name "*.lock" -path "*celestia*" -delete 2>/dev/null || true
+              find $HOME -name "*.pid" -path "*celestia*" -delete 2>/dev/null || true
+              find $HOME -name "LOCK" -path "*celestia*" -delete 2>/dev/null || true
+
+              # Kill any remaining processes more aggressively
+              sudo pkill -9 -f "celestia.*light" 2>/dev/null || true
+
+              sleep 5
+            fi
+          fi
+        done
+
+        if [ "$INIT_SUCCESS" = false ]; then
+          echo "❌ Failed to initialize light node after $MAX_RETRIES attempts"
+          exit 1
+        fi
+
+        # Update configuration for compatibility with v0.23.3-mocha
+        echo "🔧 Updating node configuration for version compatibility..."
+        if celestia light config-update --p2p.network ${{ parameters.celestiaNetwork }}; then
+          echo "✅ Node configuration updated successfully"
+        else
+          echo "⚠️ Configuration update failed, but continuing with deployment"
+        fi
+
+        INIT

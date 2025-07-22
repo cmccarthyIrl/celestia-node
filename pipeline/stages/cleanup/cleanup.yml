@@ -1,0 +1,45 @@
+parameters:
+  - name: celestiaUser
+    type: string
+  - name: rpcPort
+    type: string
+  - name: gatewayPort
+    type: string
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+  - name: remoteUser
+    type: string
+  - name: enableDebug
+    type: boolean
+  - name: removeUserHomeDirectory
+    type: boolean
+
+steps:
+  - checkout: self
+  # Phase 1: Complete Celestia Cleanup via SSH
+  - template: cleanup-comprehensive.yml
+    parameters:
+      sshKeyFile: ${{ parameters.sshKeyFile }}
+      remoteHost: ${{ parameters.remoteHost }}
+      remoteUser: ${{ parameters.remoteUser }}
+      celestiaUser: ${{ parameters.celestiaUser }}
+      removeUserHomeDirectory: ${{ parameters.removeUserHomeDirectory }}
+      cleanupType: 'complete'
+
+  # Phase 2: Verification (Debug Mode Only)
+  - template: cleanup-verification.yml
+    parameters:
+      enableDebug: ${{ parameters.enableDebug }}
+      sshKeyFile: ${{ parameters.sshKeyFile }}
+      remoteHost: ${{ parameters.remoteHost }}
+      remoteUser: ${{ parameters.remoteUser }}
+
+  # Phase 3: Local Agent Cleanup
+  - template: cleanup-local-agent.yml
+    parameters:
+      sshKeyFile: ${{ parameters.sshKeyFile }}
+
+  # Phase 4: Workspace Cleanup
+  - template: cleanup-workspace.yml

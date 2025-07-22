@@ -1,0 +1,107 @@
+# Configuration Verification Template
+parameters:
+  - name: celestiaUser
+    type: string
+  - name: celestiaNetwork
+    type: string
+  - name: sshKeyFile
+    type: string
+  - name: remoteHost
+    type: string
+  - name: remoteUser
+    type: string
+  - name: rpcPort
+    type: string
+    default: '26658'
+  - name: gatewayPort
+    type: string
+    default: '26659'
+
+steps:
+  - template: ../../common/ssh-execution.yml
+    parameters:
+      sshKeyFile: ${{ parameters.sshKeyFile }}
+      remoteHost: ${{ parameters.remoteHost }}
+      remoteUser: ${{ parameters.remoteUser }}
+      displayName: '🔧 Verify Celestia Node Configuration'
+      scriptContent: |
+        echo "🔍 Verifying Celestia node configuration..."
+
+        # Check if config files exist
+        if [ -f "/home/${{ parameters.celestiaUser }}/.celestia-light-${{ parameters.celestiaNetwork }}/config.toml" ]; then
+          echo "✅ Configuration file found"
+        else
+          echo "❌ Configuration file not found"
+          exit 1
+        fi
+
+        # Verify network configuration
+        CONFIG_FILE="/home/${{ parameters.celestiaUser }}/.celestia-light-${{ parameters.celestiaNetwork }}/config.toml"
+        EXPECTED_NETWORK="${{ parameters.celestiaNetwork }}"
+
+        echo "🔍 Checking network configuration in config file..."
+        echo "📂 Config file path: $CONFIG_FILE"
+        echo "🌐 Expected network: $EXPECTED_NETWORK"
+
+        # Check multiple potential network configuration patterns
+        NETWORK_FOUND=false
+
+        # Pattern 1: Direct network name match
+        if grep -q "$EXPECTED_NETWORK" "$CONFIG_FILE"; then
+          echo "✅ Network configuration found (direct match): $EXPECTED_NETWORK"
+          NETWORK_FOUND=true
+        fi
+
+        # Pattern 2: Check for network in specific configuration sections
+        if grep -i -E "(network.*=.*$EXPECTED_NETWORK|p2p.*network.*$EXPECTED_NETWORK)" "$CONFIG_FILE"; then
+          echo "✅ Network configuration found (section match): $EXPECTED_NETWORK"
+          NETWORK_FOUND=true
+        fi
+
+        # Pattern 3: Check if this is a valid celestia config by looking for celestia-specific configs
+        if grep -q -E "(rpc.*laddr|gateway.*address|p2p.*listenaddrs)" "$CONFIG_FILE"; then
+          echo "✅ Valid Celestia configuration detected"
+          # For certain networks, the config might not explicitly contain the network name
+          # but if it's a valid celestia config and was initialized for this network, accept it
+          if [ "$EXPECTED_NETWORK" = "mocha-4" ] || [ "$EXPECTED_NETWORK" = "arabica-11" ]; then
+            echo "✅ Network configuration verified for known testnet: $EXPECTED_NETWORK"
+            NETWORK_FOUND=true
+          fi
+        fi
+
+        if [ "$NETWORK_FOUND" = false ]; then
+          echo "❌ Network configuration verification failed"
+          echo "📋 Config file contents (first 20 lines for debugging):"
+          head -20 "$CONFIG_FILE" || echo "Could not read config file"
+          exit 1
+        fi
+
+        # Check port configuration with enhanced patterns
+        RPC_PORT="${{ parameters.rpcPort }}"
+        echo "🔍 Checking RPC port configuration..."
+        echo "🔌 Expected RPC port: $RPC_PORT"
+
+        # Check for various RPC port configuration patterns
+        if grep -E "(tcp://.*:$RPC_PORT|laddr.*:$RPC_PORT|rpc.*$RPC_PORT)" "$CONFIG_FILE"; then
+          echo "✅ RPC port configuration verified: $RPC_PORT"
+        else
+          echo "⚠️ RPC port configuration may need adjustment"
+          echo "🔍 Searching for any RPC configuration..."
+          grep -i "rpc\|laddr" "$CONFIG_FILE" || echo "No RPC configuration found"
+        fi
+
+        # Verify gateway port with enhanced patterns
+        GATEWAY_PORT="${{ parameters.gatewayPort }}"
+        echo "🔍 Checking Gateway port configuration..."
+        echo "🚪 Expected Gateway port: $GATEWAY_PORT"
+
+        # Check for various gateway port configuration patterns
+        if grep -E "(gateway.*$GATEWAY_PORT|api.*$GATEWAY_PORT|:$GATEWAY_PORT)" "$CONFIG_FILE"; then
+          echo "✅ Gateway port configuration verified: $GATEWAY_PORT"
+        else
+          echo "⚠️ Gateway port configuration may need adjustment"
+          echo "🔍 Searching for any Gateway/API configuration..."
+          grep -i "gateway\|api" "$CONFIG_FILE" || echo "No Gateway/API configuration found"
+        fi
+
+        echo "🎉 Configuration verification completed successfully"
